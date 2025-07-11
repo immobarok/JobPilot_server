@@ -30,9 +30,37 @@ async function run() {
 
     //all jobs
     app.get('/jobs', async (req, res) => {
-      const cursor = jobCollection.find()
+      const cursor = jobCollection.find().sort({ _id: -1 })
       const result = await cursor.toArray();
       res.send(result);
+    })
+
+    //query hanlde get api email come from api 
+    //job/applications?email=${email}
+    app.get('/jobs/applications', async (req, res) => {
+      const email = req.query.email;
+      const query = { hr_email: email };
+      const jobs = await jobCollection.find(query).toArray();
+
+      // should use aggregate to have optimum data fetching
+      for (const job of jobs) {
+        const applicationQuery = { jobId: job._id.toString() }
+        const application_count = await applicaitonCollection.countDocuments(applicationQuery)
+        job.application_count = application_count;
+      }
+      res.send(jobs);
+    })
+
+    //get collection of jobApplicatioin
+    app.get('/applications/job/:job_id', async (req, res) => {
+      try {
+        const id = req.params.job_id;
+        const query = { jobId: id };
+        const result = await applicaitonCollection.find(query).toArray();
+        res.send(result)
+      } catch (error) {
+        res.status(401).send({ message: error })
+      }
     })
 
     //get unique id 
@@ -53,10 +81,22 @@ async function run() {
         res.status(401).send({ message: error })
       }
     })
-    
+
+    //job add related apis
+    app.post('/add-job', async (req, res) => {
+      try {
+        const newJob = req.body;
+        const result = await jobCollection.insertOne(newJob);
+        res.status(201).send({ insertedId: result.insertedId });
+      } catch (error) {
+        res.status(500).send({ message: error.message });
+      }
+    });
+
+
+
     app.get('/applications', async (req, res) => {
       const email = req.query.email;
-
       const query = {
         applicant: email
       }
@@ -71,9 +111,20 @@ async function run() {
         application.title = job.title
         application.company_logo = job.company_logo
       }
-
       res.send(result);
     });
+
+    app.patch('/applications/:id', (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const updateStatus = {
+        $set: {
+          status: req.body.status
+        }
+      }
+      const result = applicaitonCollection.updateOne(query, updateStatus)
+      res.send(result)
+    })
 
 
     await client.connect();
