@@ -1,6 +1,13 @@
 const express = require('express')
+const cookieParser = require('cookie-parser')
+const jwt = require('jsonwebtoken');
 const cors = require('cors')
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+/* Image upload related */
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
 const app = express()
 const port = process.env.PORT || 4000
 require('dotenv').config()
@@ -10,6 +17,71 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json())
+app.use(cookieParser());
+
+const logger = (req, res, next) => {
+  console.log('inside the logger middleware');
+  next();
+}
+
+/* Config */
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_NAME,
+  api_key: process.env.CLOUDINARY_API,
+  api_secret: process.env.CLOUDINARY_SECRET
+});
+
+/* Storage  */
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'company_logos',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+    transformation: [{ width: 500, height: 500, crop: 'limit' }],
+    public_id: (req, file) => {
+      // Generate a unique filename
+      return `logo_${Date.now()}_${Math.round(Math.random() * 1E9)}`;
+    }
+  }
+})
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Check file type
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
+
+
+
+const verifyToken = (req, res, next) => {
+  console.log("Cookies:", req.cookies);
+
+  const token = req?.cookies?.token;
+  if (!token) {
+    console.log("No token found in cookies");
+    return res.status(401).send({ message: 'Unauthorized access' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      console.log("Token verify failed:", err.message);
+      return res.status(401).send({ message: "Unauthorized access from token" });
+    }
+
+    req.decoded = decoded;
+    //console.log("Token verified:", decoded);
+    next();
+  });
+}
 
 
 
@@ -28,6 +100,17 @@ async function run() {
     const jobCollection = client.db('jobPilot').collection('jobs');
     const applicaitonCollection = client.db('jobPilot').collection('applications');
 
+    //jwt realted apis
+    app.post('/jwt', async (req, res) => {
+      const userInfo = req.body;
+      const token = jwt.sign(userInfo, process.env.JWT_SECRET, { expiresIn: '7day' })
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax'
+      })
+      res.send({ success: true })
+    })
     //all jobs
     app.get('/jobs', async (req, res) => {
       const cursor = jobCollection.find().sort({ _id: -1 })
@@ -37,7 +120,7 @@ async function run() {
 
     //query hanlde get api email come from api 
     //job/applications?email=${email}
-    app.get('/jobs/applications', async (req, res) => {
+    app.get('/jobs/applications', verifyToken, async (req, res) => {
       const email = req.query.email;
       const query = { hr_email: email };
       const jobs = await jobCollection.find(query).toArray();
@@ -83,11 +166,26 @@ async function run() {
     })
 
     //job add related apis
-    app.post('/add-job', async (req, res) => {
+    app.post('/add-job', upload.single('company_logo'), async (req, res) => {
       try {
         const newJob = req.body;
+        const parsedSalaryRange = JSON.parse(req.body.salaryRange);
+        const requirements = JSON.parse(req.body.requirements);
+        const responsibilities = JSON.parse(req.body.responsibilities);
+
+        newJob.salaryRange = parsedSalaryRange;
+        newJob.requirements = requirements;
+        newJob.responsibilities = responsibilities;
+        if (req.file) {
+          newJob.company_logo = req.file.path;
+          newJob.company_logo_public_id = req.file.filename;
+        }
         const result = await jobCollection.insertOne(newJob);
-        res.status(201).send({ insertedId: result.insertedId });
+        res.status(201).send({
+          insertedId: result.insertedId,
+          message: 'Job posted successfully',
+          company_logo: newJob.company_logo
+        });
       } catch (error) {
         res.status(500).send({ message: error.message });
       }
@@ -114,7 +212,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch('/applications/:id', (req, res) => {
+    app.patch('/applications/:id', async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const updateStatus = {
@@ -122,7 +220,7 @@ async function run() {
           status: req.body.status
         }
       }
-      const result = applicaitonCollection.updateOne(query, updateStatus)
+      const result = await applicaitonCollection.updateOne(query, updateStatus)
       res.send(result)
     })
 
