@@ -19,8 +19,28 @@ app.use(cors({
 app.use(express.json())
 app.use(cookieParser());
 
+var admin = require("firebase-admin");
+var serviceAccount = require('./service_key.json')
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
 const logger = (req, res, next) => {
   console.log('inside the logger middleware');
+  next();
+}
+
+const verifyFirebaseToken = async (req, res, next) => {
+  console.log("Incoming Request Headers:", req.headers);
+  const authHeader = req.headers?.authorization;
+  console.log("Authorization Header Value:", authHeader);
+  const token = authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).send({ message: 'unauthorized access' })
+  }
+  const userInfo = await admin.auth().verifyIdToken(token);
+  req.tokenEmail = userInfo.email;
   next();
 }
 
@@ -32,20 +52,38 @@ cloudinary.config({
 });
 
 /* Storage  */
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
+const companyLogoStorage = new CloudinaryStorage({
+  cloudinary,
   params: {
     folder: 'company_logos',
     allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
     transformation: [{ width: 500, height: 500, crop: 'limit' }],
-    public_id: (req, file) => {
-      // Generate a unique filename
-      return `logo_${Date.now()}_${Math.round(Math.random() * 1E9)}`;
-    }
+    public_id: () => `logo_${Date.now()}_${Math.round(Math.random() * 1E9)}`
   }
-})
+});
 
-const upload = multer({
+const blogStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'blog_images',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+    transformation: [{ width: 1200, height: 800, crop: 'limit' }],
+    public_id: (req, file) => `blog_${Date.now()}_${file.originalname.split('.')[0]}`
+  }
+});
+
+const authorStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'author_images',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+    transformation: [{ width: 300, height: 300, crop: 'fill', gravity: 'face' }],
+    public_id: (req, file) => `author_${req.user?.uid || 'guest'}_${Date.now()}`
+  }
+});
+
+
+/* const upload = multer({
   storage: storage,
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB limit
@@ -58,7 +96,19 @@ const upload = multer({
       cb(new Error('Only image files are allowed!'), false);
     }
   }
-});
+}); */
+
+const upload = multer({ storage: blogStorage });
+const combinedUpload = multer({
+  storage: blogStorage,
+}).fields([
+  { name: 'logo', maxCount: 1 },
+  { name: 'coverImage', maxCount: 1 }
+]);
+
+const uploadCompanyLogo = multer({ storage: companyLogoStorage });
+const uploadLogo = multer({ storage: blogStorage });
+const uploadCover = multer({ storage: authorStorage });
 
 
 
@@ -99,6 +149,7 @@ async function run() {
 
     const jobCollection = client.db('jobPilot').collection('jobs');
     const applicaitonCollection = client.db('jobPilot').collection('applications');
+    const blogCollection = client.db('jobPilot').collection('blogs');
 
     //jwt realted apis
     app.post('/jwt', async (req, res) => {
@@ -153,6 +204,12 @@ async function run() {
       const result = await jobCollection.findOne(query)
       res.send(result)
     })
+    app.get('/jobs/jobs/:id', async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) }
+      const result = await jobCollection.findOne(query)
+      res.send(result)
+    })
 
     //apply for a job 
     app.post('/job-applications', async (req, res) => {
@@ -166,16 +223,16 @@ async function run() {
     })
 
     //job add related apis
-    app.post('/add-job', upload.single('company_logo'), async (req, res) => {
+    app.post('/add-job', uploadCompanyLogo.single('company_logo'), async (req, res) => {
       try {
         const newJob = req.body;
         const parsedSalaryRange = JSON.parse(req.body.salaryRange);
         const requirements = JSON.parse(req.body.requirements);
         const responsibilities = JSON.parse(req.body.responsibilities);
-
         newJob.salaryRange = parsedSalaryRange;
         newJob.requirements = requirements;
         newJob.responsibilities = responsibilities;
+        newJob.postedAt = new Date();
         if (req.file) {
           newJob.company_logo = req.file.path;
           newJob.company_logo_public_id = req.file.filename;
@@ -193,8 +250,11 @@ async function run() {
 
 
 
-    app.get('/applications', async (req, res) => {
+    app.get('/applications', logger, verifyFirebaseToken, async (req, res) => {
       const email = req.query.email;
+      if (req.tokenEmail != email) {
+        return res.status(403).send({ message: 'forbidden access' })
+      }
       const query = {
         applicant: email
       }
@@ -223,6 +283,37 @@ async function run() {
       const result = await applicaitonCollection.updateOne(query, updateStatus)
       res.send(result)
     })
+
+    //blogs related apis
+    app.get('/blogs', async (req, res) => {
+      const blogs = blogCollection.find().sort({ _id: -1 })
+      const result = await blogs.toArray()
+      res.status(201).json(result)
+    })
+
+    app.post('/blogs', combinedUpload, async (req, res) => {
+      try {
+        const { title, author, publisdedDate, readTime, tags, shortDescription, content } = req.body;
+        const logo = req.files['logo']?.[0]?.path;
+        const coverImage = req.files['coverImage']?.[0]?.path;
+        const blog = {
+          title,
+          author,
+          publisdedDate,
+          readTime,
+          tags: JSON.parse(tags),
+          shortDescription,
+          content,
+          logo,
+          coverImage
+        };
+        const result = await blogCollection.insertOne(blog)
+        res.status(201).send(result)
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: 'Blog upload failed', error: error.message });
+      }
+    });
 
 
     await client.connect();

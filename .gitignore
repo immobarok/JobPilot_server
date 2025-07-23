@@ -1,6 +1,6 @@
 # Logs
 .env
-firebase-admin-key.json
+service_key.json
 logs
 *.log
 npm-debug.log*
