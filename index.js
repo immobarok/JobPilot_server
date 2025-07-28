@@ -13,7 +13,11 @@ const port = process.env.PORT || 4000
 require('dotenv').config()
 
 app.use(cors({
-  origin: ['http://localhost:5173'],
+  origin: [
+    'http://localhost:5173',
+    'https://job-portal-9eb62.web.app',
+    'https://job-portal-9eb62.firebaseapp.com'
+  ],
   credentials: true
 }));
 app.use(express.json())
@@ -316,9 +320,9 @@ async function run() {
     });
 
 
-    await client.connect();
+    /* await client.connect();
     await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    console.log("Pinged your deployment. You successfully connected to MongoDB!"); */
   } finally {
     /* await client.close(); */
   }
